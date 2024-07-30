@@ -80,66 +80,14 @@ class RecognizeFile:
         file_type, _ = guess_type(path)
         return file_type
 
-class Handlers:
+class FileHandlers:
     def __init__(self) -> None:
-        self.app_routes = []
-        self.hosts = ["localhost:8001", "127.0.0.1:8001"]
-        self.headers = {
-            'Server': self.app_name,
-            'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
-            'X-Frame-Options': 'SAMEORIGIN',
-            'X-XSS-Protection': '1; mode=block',
-            'Referrer-Policy': 'origin-when-cross-origin',
-            'Permissions-Policy': 'geolocation=(self), microphone=()',
-            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-        }
-        self.valid_static_files = ['text/css', 'text/javascript', 'text/html', 'image/png', 'image/jpeg', 'image/jpg']
-
-    async def before(self, request_id):
-        request = self.requests[request_id]['request']
-        ip = request.headers.get('X-Forwarded-For', None) or request.headers.get('X-Real-IP', None) or request.headers.get('Forwarded', None)
-        await self.log(f"Request {request_id}: {ip or ''} @{request.path}")
-
-        host, useragent = request.headers.get('Host', None), request.headers.get('User-Agent', None)
-        if host not in self.hosts:
-            raise Error('Host not allowed')
-
-        for route_path, route_Handlers, route_methods in self.app_routes:
-            if (tail := str(request.path)) == route_path:
-                if request.method in route_methods:
-                    return route_Handlers
-                else:
-                    raise Error('Method not allowed')
-            
-        raise Error('Unknown route')
-
-    async def after(self, request_id):
-        if isinstance(request_id, (str,)):
-            if (request := self.requests[request_id])['response'] is not None and request['request_state'] != 'processed':
-                for key, value in self.headers.items():
-                    self.requests[request_id]['response'].headers[key] = value
-                self.requests[request_id]['request_state'] = 'processed'
-        else:
-            for key, value in self.headers.items():
-                request_id[0].headers[key] = value
-            return request_id[0]
-            
-    async def gen(self, file: str, start: int, end: int, chunk_size=100):
-        with open(file, 'rb') as f:
-            f.seek(start)
-            while start < end:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-                start += len(chunk)
-                yield chunk
-                if start >= end:
-                    break
+        pass
 
     async def stream_file(self, request_id, file: str, chunk_size=1024):
         try:
             if not exists( (file := abspath(file)) ):
-                raise FileNotFoundError
+                raise Error("The content you're looking for cannot be found on this server")
             
             file_size = getsize(file)
             if (range_header := self.requests[request_id]['request'].headers.get('Range', None)):
@@ -162,33 +110,99 @@ class Handlers:
             )
             self.requests[request_id]['response'] = res
             await self.after(request_id)
-            
-            while True:
-                await self.requests[request_id]['response'].prepare(self.requests[request_id]['request'])
-                async for chunk in self.gen(file, start, end + 60, chunk_size=chunk_size):
-                    if chunk:
-                        await self.requests[request_id]['response'].write(chunk)
-                    else:
-                        break
-                break
 
-        except FileNotFoundError:
-            self.requests[request_id]['response'] = self.web.json_response(status=404, data={
-                'detail': "The content you're looking for cannot be found on this server"
-            })
-        except PermissionError:
-            self.requests[request_id]['response'] = self.web.json_response(status=403, data={'detail': "Access denied"})
-        except ConnectionError: pass
+            f = open(file, 'rb')
+            self.requests[request_id]['open_files'] = [f]
+
+            # prepare request here
+            await self.requests[request_id]['response'].prepare(self.requests[request_id]['request'])
+
+            while True:
+                try:
+                    f.seek(start)
+                    while start < end + 10:
+                        chunk = f.read(chunk_size)
+                        if chunk:
+                            start += len(chunk)
+                            await self.requests[request_id]['response'].write(chunk)
+                            if start >= end:
+                                break                               
+                        else:
+                            break
+                    break
+                except Exception as e:
+                    break
+
+        except Error as e:
+            self.requests[request_id]['response'] = self.web.json_response(status=403, data={'detail': str(e)})
         except Exception as e:
             await self.log(e)
-            self.requests[request_id]['response'] = self.web.json_response(status=403, data={'detail': 'Something went wrong'})
         finally:
-            return self.requests[request_id]['response']
+            try:
+                if (files := self.requests[request_id].get('open_files', None)):
+                    for file in files:
+                        file.close()
+
+                return self.requests[request_id]['response']
+            except Exception as e: pass
+
+class Handlers:
+    def __init__(self) -> None:
+        self.app_routes = []
+        self.hosts = ["localhost:8001", "127.0.0.1:8001"]
+        self.headers = {
+            'Server': self.app_name,
+            'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
+            'X-Frame-Options': 'SAMEORIGIN',
+            'X-XSS-Protection': '1; mode=block',
+            'Referrer-Policy': 'origin-when-cross-origin',
+            'Permissions-Policy': 'geolocation=(self), microphone=()',
+            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        }
+
+    async def request_timeout_management(self, request_id):
+        try:
+            await io.sleep(10)
+            del self.requests[request_id]
+        except KeyError: pass
+        except Exception as e: await self.log(e)
+
+    async def before(self, request_id):
+        request = self.requests[request_id]['request']
+        ip = request.headers.get('X-Forwarded-For', None) or request.headers.get('X-Real-IP', None) or request.headers.get('Forwarded', None)
+        await self.log(f"Request {request_id}: {ip or ''} @{request.path}")
+
+        host, useragent = request.headers.get('Host', None), request.headers.get('User-Agent', None)
+        if host not in self.hosts:
+            raise Error('Host not allowed')
+
+        for route_path, route_Handlers, route_methods in self.app_routes:
+            if (tail := str(request.path)) == route_path:
+                if request.method in route_methods:
+                    return route_Handlers
+                else:
+                    raise Error('Method not allowed')
+            
+        raise Error('Unknown route')
+
+    async def after(self, request_id):
+
+        if isinstance(request_id, (str,)):
+            self.jobs.append(io.get_event_loop().create_task( self.request_timeout_management(request_id) ))
+            if (request := self.requests[request_id])['response'] is not None and request['request_state'] != 'processed':
+                for key, value in self.headers.items():
+                    self.requests[request_id]['response'].headers[key] = value
+                self.requests[request_id]['request_state'] = 'processed'
+        else:
+            for key, value in self.headers.items():
+                request_id[0].headers[key] = value
+
+            return request_id[0]
 
     async def abort(self, msg=''):
         raise Error(msg)
 
-class App(Handlers, Log, Safe, RecognizeFile):
+class App(Handlers, Log, Safe, RecognizeFile, FileHandlers):
     def __init__(self, host='0.0.0.0', port=8001, app_name='Anonyxhaven') -> None:
         self.host, self.port = host, port
         self.jobs = []
@@ -199,11 +213,13 @@ class App(Handlers, Log, Safe, RecognizeFile):
         self.safe_key = environ.get("safe_key", Fernet.generate_key())
         self.web = web
         self.app_name = app_name
+        self.cookie_auth = False
 
         Log.__init__(self)
         Safe.__init__(self)
         RecognizeFile.__init__(self)
         Handlers.__init__(self)
+        FileHandlers.__init__(self)
 
     def add_before(self, middleware_func: Callable):
         self.before_middlewares.append(middleware_func)
@@ -224,15 +240,25 @@ class App(Handlers, Log, Safe, RecognizeFile):
         @wraps(func)
         async def wrapper(self, *args, **kwargs):
             try:
+                request_id = None
                 request = args[0]
-                while True:
-                    request_id = str(token_urlsafe(16))
-                    if request_id not in self.requests:
-                        break
-                    else:
-                        await io.sleep(0.1)
 
-                self.requests[request_id] = {'request': request, 'request_state': 'unprocessed', 'id': request_id, 'response': None}
+                if request_id is None:
+                    while True:
+                        request_id = str(token_urlsafe(16))
+                        if request_id not in self.requests:
+                            break
+                        else:
+                            await io.sleep(0.01)               
+                r_data = {
+                    'request': request,
+                    'request_state': 'unprocessed',
+                    'id': request_id,
+                    'initiated': str(datetime.now()),
+                    'response': None
+                }
+
+                self.requests[request_id] = r_data
 
                 if (route := await self.before(request_id)):
                     kwargs['request_id'] = request_id
@@ -250,17 +276,19 @@ class App(Handlers, Log, Safe, RecognizeFile):
             if error is not None: raise error
 
             if self.requests[request_id]['request_state'] == 'unprocessed':
-                for middleware in self.before_middlewares:
-                    if (_ := await middleware(request_id)) is not None:
-                        self.requests[request_id]['response'] = _
+                if self.before_middlewares != []:
+                    for middleware in self.before_middlewares:
+                        if (_ := await middleware(request_id)) is not None:
+                            self.requests[request_id]['response'] = _
 
                 if self.requests[request_id]['response'] is None:
                     self.requests[request_id]['response'] = await self.requests[request_id]['route'](request_id)
 
-                if self.requests[request_id]['response'] is not None:
-                    for middleware in self.after_middlewares:
-                        if (_ := await middleware(request_id)) is not None:
-                            self.requests[request_id]['response'] = _
+                if self.after_middlewares != []:
+                    if self.requests[request_id]['response'] is not None:
+                        for middleware in self.after_middlewares:
+                            if (_ := await middleware(request_id)) is not None:
+                                self.requests[request_id]['response'] = _
 
         except Error as e:
             error = self.web.json_response(status=403, data={'detail': str(e)})
@@ -274,15 +302,23 @@ class App(Handlers, Log, Safe, RecognizeFile):
                 else:
                     await self.after(request_id)
                     if (response := self.requests[request_id]['response']) is not None:
-                        if '<StreamResponse' not in str(response):
-                            del self.requests[request_id]
-                        else:
-                            pass
+                        pass
 
             except Exception as e:
-                await self.log(e)
+                pass
             finally:
                 return response
+
+    async def finalize(self):
+        if self.jobs != []:
+            for job in self.jobs:
+                job.cancel()
+
+            for job in self.jobs:
+                try:
+                    await job
+                except io.CancelledError:
+                    pass
 
     async def run_app(self):
         runner = None
@@ -299,12 +335,17 @@ class App(Handlers, Log, Safe, RecognizeFile):
     def run(self):
         try:
             io.run(self.run_app())
+        except ConnectionResetError:
+            pass
         except ConnectionError:
             pass
         except io.CancelledError:
             pass
         except KeyboardInterrupt:
             pass
+        finally:
+            io.run(self.finalize())
+            
 
 if __name__ == "__main__":
     pass
