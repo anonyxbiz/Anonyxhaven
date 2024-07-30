@@ -25,6 +25,39 @@ pip install git+https://github.com/anonyxbiz/Anonyxhaven.git
 Here's an example of how to create and run an application using **AnonyxHaven**:
 
 ```python
+from Anonyxhaven import App
+import asyncio as io
+import random
+
+app = App()
+
+# Serve files
+@app.routes('/favicon.ico', ['GET'])
+async def route(request_id):
+    io.get_event_loop().create_task( app.stream_file(request_id, './static/images/logo.png') )
+    while (response := app.requests[request_id]['response']) is None:
+        await io.sleep(0.1)
+
+    return response
+
+@app.routes('/watch', ['POST', 'GET'])
+async def route(request_id):
+    video_id = str(app.requests[request_id]['request'].query_string).replace('v=', '')
+
+    io.get_event_loop().create_task( app.stream_file(request_id, f'./static/uploads/{video_id}.mp4', chunk_size=1024) )
+    while (response := app.requests[request_id]['response']) is None:
+        await io.sleep(0.1)
+
+    return response
+
+# Rest api
+@app.routes('/', ['GET'])
+async def route(request_id):
+    _ = [' something', ' nothing']
+    return app.web.json_response({'you_are': random.choice(_)})    
+
+if __name__ == "__main__":
+    app.run()
 
 ```
 
