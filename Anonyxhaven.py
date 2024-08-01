@@ -159,10 +159,11 @@ class Handlers:
             'Permissions-Policy': 'geolocation=(self), microphone=()',
             'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
         }
-
+        self.request_timeout_management_timeout = 60
+ 
     async def request_timeout_management(self, request_id):
         try:
-            await io.sleep(60)
+            await io.sleep(self.request_timeout_management_timeout)
             del self.requests[request_id]
         except KeyError: pass
 
