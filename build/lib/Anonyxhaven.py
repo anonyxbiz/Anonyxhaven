@@ -162,7 +162,7 @@ class Handlers:
 
     async def request_timeout_management(self, request_id):
         try:
-            await io.sleep(60)
+            await io.sleep(5)
             del self.requests[request_id]
         except KeyError: pass
 
