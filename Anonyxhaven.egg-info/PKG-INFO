@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: Anonyxhaven
-Version: 1.0.5
+Version: 1.0.6
 Summary: Anonyxhaven - an asynchronous web framework built on top of Aiohttp, designed to implement custom security, performance, and efficiency for deploying Python applications. It offers a robust set of features for handling requests, managing security, and serving static and dynamic content in a performant manner.
 Home-page: https://github.com/anonyxbiz/Anonyxhaven
 Author: Anonyxbiz
