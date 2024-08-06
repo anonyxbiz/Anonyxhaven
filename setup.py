@@ -6,7 +6,7 @@ with open('requirements.txt') as f:
 
 setup(
     name="Anonyxhaven",
-    version="1.0.6",
+    version="1.0.7",
     description="Anonyxhaven - an asynchronous web framework built on top of Aiohttp, designed to implement custom security, performance, and efficiency for deploying Python applications. It offers a robust set of features for handling requests, managing security, and serving static and dynamic content in a performant manner.",
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
