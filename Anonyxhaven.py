@@ -202,14 +202,6 @@ class Handlers:
     async def abort(self, msg=''):
         raise Error(msg)
 
-class RecognizeFile:
-    def __init__(self):
-        pass
-
-    async def recognize_file_simple(self, path):
-        file_type, _ = guess_type(path)
-        return file_type
-
 class Rate_limiter:
     def __init__(self, life_span=10, max_rqs_per_life_span=30, IP_INFO_API_KEY=None) -> None:
         self.ip_s = {}
