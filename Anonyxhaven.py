@@ -369,7 +369,11 @@ class App(Handlers, Log, Safe, RecognizeFile, FileHandlers, Rate_limiter):
         self.before_middlewares = []
         self.after_middlewares = []
         self.logger_config = {'store_logs': False, 'encrypt': False}
-        self.safe_key = environ.get("safe_key", Fernet.generate_key())
+        try:
+            self.safe_key = environ.get("safe_key", Fernet.generate_key())
+        except:
+            self.safe_key = None
+            
         self.web = web
         self.app_name = app_name
         self.cookie_auth = False
