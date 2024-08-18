@@ -9,14 +9,18 @@ from inspect import currentframe
 from datetime import datetime
 from functools import wraps
 from typing import Callable
-from os import environ
+from os import environ, name as os_name
 from os.path import exists, abspath, getsize
 from mimetypes import guess_type
 from secrets import token_urlsafe
 
 """External_modules"""
 from aiohttp import web, ClientSession
-from cryptography.fernet import Fernet
+
+try:
+    from cryptography.fernet import Fernet
+except Exception as e:
+    pass
 
 p = print
 
@@ -367,7 +371,11 @@ class App(Handlers, Log, Safe, RecognizeFile, FileHandlers, Rate_limiter):
         self.before_middlewares = []
         self.after_middlewares = []
         self.logger_config = {'store_logs': False, 'encrypt': False}
-        self.safe_key = environ.get("safe_key", Fernet.generate_key())
+        try:
+            self.safe_key = environ.get("safe_key", Fernet.generate_key())
+        except:
+            self.safe_key = None
+            
         self.web = web
         self.app_name = app_name
         self.cookie_auth = False
