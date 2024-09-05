@@ -16,6 +16,7 @@ from secrets import token_urlsafe
 
 """External_modules"""
 from aiohttp import web, ClientSession
+from aiofiles import open as aiofiles_open
 
 try:
     from cryptography.fernet import Fernet
@@ -87,10 +88,10 @@ class RecognizeFile:
 class FileHandlers:
     def __init__(self) -> None:
         pass
-
+    
     async def stream_file(self, request_id, file: str, chunk_size=1024):
         try:
-            if not exists( (file := abspath(file)) ):
+            if not exists((file := abspath(file))):
                 raise Error("The content you're looking for cannot be found on this server")
             
             file_size = getsize(file)
@@ -115,27 +116,26 @@ class FileHandlers:
             self.requests[request_id]['response'] = res
             await self.after(request_id)
 
-            f = open(file, 'rb')
-            self.requests[request_id]['open_files'] = [f]
+            async with aiofiles_open(file, 'rb') as f:
+                # prepare request here
+                await self.requests[request_id]['response'].prepare(self.requests[request_id]['request'])
 
-            # prepare request here
-            await self.requests[request_id]['response'].prepare(self.requests[request_id]['request'])
-
-            while True:
-                try:
-                    f.seek(start)
-                    while start < end + 10:
-                        chunk = f.read(chunk_size)
-                        if chunk:
-                            start += len(chunk)
-                            await self.requests[request_id]['response'].write(chunk)
-                            if start >= end:
-                                break                               
-                        else:
-                            break
-                    break
-                except Exception as e:
-                    break
+                while True:
+                    try:
+                        await f.seek(start)
+                        while start < end + 10:
+                            chunk = await f.read(chunk_size)
+                            if chunk:
+                                start += len(chunk)
+                                await self.requests[request_id]['response'].write(chunk)
+                                if start >= end:
+                                    break                               
+                            else:
+                                break
+                        break
+                    except Exception as e:
+                        await self.log(e)
+                        break
 
         except Error as e:
             self.requests[request_id]['response'] = self.web.json_response(status=403, data={'detail': str(e)})
@@ -143,12 +143,9 @@ class FileHandlers:
             await self.log(e)
         finally:
             try:
-                if (files := self.requests[request_id].get('open_files', None)):
-                    for file in files:
-                        file.close()
-
                 return self.requests[request_id]['response']
-            except Exception as e: pass
+            except Exception as e:
+                await self.log(e)
 
 class Handlers:
     def __init__(self) -> None:
@@ -218,6 +215,8 @@ class Rate_limiter:
         self.IP_INFO_API_KEY = IP_INFO_API_KEY or environ.get('ip_info_key', None)
 
     async def identification(self, ip):
+        if not app.IP_INFO_API_KEY:
+            return
         async with ClientSession() as client:
             async with client.get(f"https://ipinfo.io/{ip}?token={self.IP_INFO_API_KEY}") as r:
                 if r.status >= 400:
@@ -291,35 +290,33 @@ class Rate_limiter:
 
             chunks = b''
 
-            f = open(file, 'rb')
-            while True:
-                try:
-                    chunk = f.read(chunk_size)
-                    if chunk:
-                        chunks += chunk
-                        chunk = chunks.decode('utf-8')
-
-                        for key, val in args.items():
-                            chunk = chunk.replace(key, val)
-                        
-                        chunk = chunk.encode()
-                        if isinstance(chunk, (bytes, bytearray)):
-                            await response.write(chunk)
-                            chunks = b''
-                    else:
-                        await response.write_eof()
-                        break
-
-                except (UnicodeEncodeError, UnicodeWarning, UnicodeTranslateError, UnicodeDecodeError):
-                    pass
-                except Exception as e:
-                    p(e)
+            async with aiofiles_open(file, 'rb') as f:
+                while True:
+                    try:
+                        chunk = f.read(chunk_size)
+                        if chunk:
+                            chunks += chunk
+                            chunk = chunks.decode('utf-8')
+    
+                            for key, val in args.items():
+                                chunk = chunk.replace(key, val)
+                            
+                            chunk = chunk.encode()
+                            if isinstance(chunk, (bytes, bytearray)):
+                                await response.write(chunk)
+                                chunks = b''
+                        else:
+                            await response.write_eof()
+                            break
+    
+                    except (UnicodeEncodeError, UnicodeWarning, UnicodeTranslateError, UnicodeDecodeError):
+                        pass
+                    except Exception as e:
+                        await self.log(e)
 
         except Exception as e:
-            p(e)
+            await self.log(e)
         finally:
-            f.close()
-
             return response
 
     async def app_defender(self, request_id):
@@ -511,7 +508,6 @@ class App(Handlers, Log, Safe, RecognizeFile, FileHandlers, Rate_limiter):
             pass
         finally:
             io.run(self.finalize())
-            
 
 if __name__ == "__main__":
     pass
