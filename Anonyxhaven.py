@@ -215,7 +215,7 @@ class Rate_limiter:
         self.IP_INFO_API_KEY = IP_INFO_API_KEY or environ.get('ip_info_key', None)
 
     async def identification(self, ip):
-        if not app.IP_INFO_API_KEY:
+        if not self.IP_INFO_API_KEY:
             return
         async with ClientSession() as client:
             async with client.get(f"https://ipinfo.io/{ip}?token={self.IP_INFO_API_KEY}") as r:
