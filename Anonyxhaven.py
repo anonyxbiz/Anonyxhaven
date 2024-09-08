@@ -1,8 +1,4 @@
 # ./Anonyxhaven/Anonyxhaven.py
-"""
-# AnonyxHaven
-AnonyxHaven is an asynchronous web framework built on top of Aiohttp, designed to implement custom security, performance, and efficiency for deploying production-ready Python applications. It offers a robust set of features for handling requests, managing security, and serving static and dynamic content in a performant manner.
-"""
 """Internal_modules"""
 import asyncio as io, os, random
 from inspect import currentframe
@@ -10,10 +6,10 @@ from datetime import datetime
 from functools import wraps
 from typing import Callable
 from os import environ, name as os_name
-from os.path import exists, abspath, getsize
+from os.path import exists, abspath, getsize, basename
 from mimetypes import guess_type
 from secrets import token_urlsafe
-
+from asyncio import get_event_loop as gel
 """External_modules"""
 from aiohttp import web, ClientSession
 from aiofiles import open as aiofiles_open
@@ -35,19 +31,38 @@ class Error(Exception):
 
 class Save:
     def __init__(self, db=None) -> None:
-        self.db = db or "db.scarface"
+        self.db = db or "db.anonyxhaven"
 
     async def save_data(self, data: str):
-        with open(self.db, "a", encoding="utf-8") as f:
-            f.write(data + "\n")
+        async with aiofiles_open(self.db, "ab") as f:
+            d = data + "\n"
+            f.write(d.encode())
         
 class Log:
-    def __init__(self) -> None:
-        pass
+    def __init__(self, logger_config=None) -> None:
+        self.logger_config = logger_config or {
+            'store_logs': False,
+            'encrypt': False
+        }
+
+    def get_time(self):
+        # Sync operation
+        time = str(datetime.now().time())
+        return time
 
     async def log(self, content=None, method=None, console_log=True):
-        method = method or currentframe().f_back.f_code.co_name
-        content = f"$ {method} [{str(datetime.now().time())}]: {str(content)}"
+
+        def get_method_name():
+            frame = currentframe().f_back
+            return frame.f_code.co_name
+    
+        method = method or await gel().run_in_executor(None, get_method_name)
+        
+        time = await gel().run_in_executor(
+            None,
+            self.get_time
+        )
+        content = f"$ {method} [{time}]: {str(content)}"
 
         for x in ['KeyboardInterrupt', 'ConnectionResetError', 'Cannot write to closing transport', 'Connection lost', 'Cannot call write()']:
             if x in content:
@@ -55,11 +70,12 @@ class Log:
 
         if self.logger_config['store_logs']:
             if self.logger_config['encrypt']:
-                log_ = await self.safe_tool( [content] )
+                loop = io.get_event_loop()
+                log_ = await loop.run_in_executor(None, self.safe_tool, [content])
             else:
                 log_ = content
 
-            io.get_event_loop().create_task( Save().save_data( log_ ) )
+            io.get_event_loop().create_task(Save().save_data(log_))
 
         if console_log:
             p(content)
@@ -68,12 +84,12 @@ class Safe:
     def __init__(self) -> None:
         pass
 
-    async def safe_tool(self, og: list | tuple) -> str | None:
+    def safe_tool(self, og: list | tuple) -> str | None:
         try:
-            if isinstance(og, (list)):
-                return Fernet(self.safe_key.encode()).encrypt(str(og[0]).encode("utf-8")).decode('utf-8')
-            elif isinstance(og, (tuple)):
-                return Fernet(self.safe_key.encode()).decrypt(str(og[0]).encode("utf-8")).decode('utf-8')
+            if isinstance(og, (list,)):
+                return Fernet(self.safe_key).encrypt(str(og[0]).encode("utf-8")).decode('utf-8')
+            elif isinstance(og, (tuple,)):
+                return Fernet(self.safe_key).decrypt(str(og[0]).encode("utf-8")).decode('utf-8')
         except Exception as e:
             p(e)
         
@@ -82,20 +98,27 @@ class RecognizeFile:
         pass
 
     async def recognize_file_simple(self, path):
-        file_type, _ = guess_type(path)
+        file_type, _ = await gel().run_in_executor(None, guess_type, path)
         return file_type
 
 class FileHandlers:
     def __init__(self) -> None:
         pass
-    
-    async def stream_file(self, request_id, file: str, chunk_size=1024):
+
+    async def stream_file(self, request_id, file: str, chunk_size=126):
         try:
-            if not exists((file := abspath(file))):
-                raise Error("The content you're looking for cannot be found on this server")
+            file = await gel().run_in_executor(None, abspath, file)
+            file_exists = await gel().run_in_executor(None, exists, file)
             
-            file_size = getsize(file)
-            if (range_header := self.requests[request_id]['request'].headers.get('Range', None)):
+            if not file_exists:
+                raise Error("The content you're looking for cannot be found on this server")
+            else:
+                filename = await gel().run_in_executor(None, basename, file)
+                
+            file_size = await gel().run_in_executor(None, getsize, file)
+            
+            range_header = self.requests[request_id]['request'].headers.get('Range', None)
+            if range_header:
                 byte_range = range_header.strip().split('=')[1]
                 start, end = byte_range.split('-')
                 start = int(start)
@@ -104,32 +127,34 @@ class FileHandlers:
                 start = 0
                 end = file_size - 1
 
+            content_type = await self.recognize_file_simple(file)
+
             res = self.web.StreamResponse(
                 status=206 if range_header else 200,
                 headers={
                     'Content-Range': f'bytes {start}-{end}/{file_size}' if range_header else '',
                     'Accept-Ranges': 'bytes',
                     'Content-Length': str(end - start + 1),
-                    'Content-Type': await self.recognize_file_simple(file)
+                    'Content-Type': content_type,
+                    'Content-Disposition': 'inline; filename="{}"'.format(filename)
                 }
             )
             self.requests[request_id]['response'] = res
             await self.after(request_id)
 
             async with aiofiles_open(file, 'rb') as f:
-                # prepare request here
                 await self.requests[request_id]['response'].prepare(self.requests[request_id]['request'])
 
                 while True:
                     try:
                         await f.seek(start)
-                        while start < end + 10:
+                        while start < end + 1:
                             chunk = await f.read(chunk_size)
                             if chunk:
                                 start += len(chunk)
                                 await self.requests[request_id]['response'].write(chunk)
-                                if start >= end:
-                                    break                               
+                                if start > end:
+                                    break
                             else:
                                 break
                         break
@@ -190,7 +215,7 @@ class Handlers:
 
     async def after(self, request_id):
         if isinstance(request_id, (str,)):
-            self.jobs.append(io.get_event_loop().create_task( self.request_timeout_management(request_id) ))
+            self.jobs.append(gel().create_task( self.request_timeout_management(request_id) ))
             if (request := self.requests[request_id])['response'] is not None and request['request_state'] != 'processed':
                 for key, value in self.headers.items():
                     self.requests[request_id]['response'].headers[key] = value
@@ -214,6 +239,9 @@ class Rate_limiter:
         self.flagged = ['vps', 'tor', 'exit', 'node', 'relay']
         self.IP_INFO_API_KEY = IP_INFO_API_KEY or environ.get('ip_info_key', None)
 
+    def retrieve_time(self):
+        return datetime.now()
+        
     async def identification(self, ip):
         if not self.IP_INFO_API_KEY:
             return
@@ -234,8 +262,17 @@ class Rate_limiter:
 
     async def rate_limiting(self, ip):
         try:
-            difference = (datetime.now() - self.ip_s[ip]['stamp']).total_seconds()
-            last_hit_difference = (datetime.now() - self.ip_s[ip]['last_hit']).total_seconds()
+            def diff():
+                difference = (datetime.now() - self.ip_s[ip]['stamp']).total_seconds()
+                last_hit_difference = (datetime.now() - self.ip_s[ip]['last_hit']).total_seconds()
+                
+                return difference, last_hit_difference
+            
+            difference, last_hit_difference = await io.get_event_loop().run_in_executor(
+                None,
+                diff
+            )
+            
             if (hits := self.ip_s[ip]['hits']) >= self.max_rqs_per_life_span:
                 if difference <= self.life_span:
                     self.ip_s[ip]['nerfed_times'] += 1
@@ -246,18 +283,18 @@ class Rate_limiter:
                     if difference >= self.life_span:
                         if last_hit_difference <= self.ip_s[ip]["cooldown"]:
                             time_asked_to_chill = self.ip_s[ip]["cooldown"]
-                            cool_down_increment = random.randint(0, 10)
+                            cool_down_increment = 1
 
                             # to make their wait time count, deduct the time they've waited
                             self.ip_s[ip]["cooldown"] += cool_down_increment
 
                             self.ip_s[ip]["cooldown"] = self.ip_s[ip]["cooldown"] - last_hit_difference
 
-                            response = (False, f'Ayee, you\'re sending requests faster than a squirrel on an espresso binge! I asked you to chill for {time_asked_to_chill} seconds, but you\'ve only managed to cool down for {last_hit_difference} seconds. So now, I\'m slamming the brakes even harder, get ready for another {self.ip_s[ip]["cooldown"]} seconds of downtime. Slow down, grab a coffee, and give us all a breather. If you don\'t, the wait time will become a real marathon!')
+                            response = (False, f'Ayee, you\'re sending requests faster than a squirrel on an espresso binge! I asked you to chill for {time_asked_to_chill:.0f} seconds, but you\'ve only managed to cool down for {last_hit_difference:.0f} seconds. So now, I\'m slamming the brakes even harder, get ready for another {self.ip_s[ip]["cooldown"]:.0f} seconds of downtime. Slow down, grab a coffee, and give us all a breather. If you don\'t, the wait time will become a real marathon!')
 
                             return response
                         else:
-                            self.ip_s[ip]['stamp'] = datetime.now()
+                            self.ip_s[ip]['stamp'] = await io.get_event_loop().run_in_executor(None, self.retrieve_time)
                             self.ip_s[ip]['hits'] = 0
                             self.ip_s[ip]['cooldown'] = self.cool_down
 
@@ -271,54 +308,6 @@ class Rate_limiter:
         except (Exception) as e:
             await self.log(e)
 
-    async def stream_dynamic_file(self, request_id, file: str, chunk_size=1024, args=None):
-        try:
-            request = self.requests[request_id]['request']
-
-            if not os.path.exists( (file := os.path.abspath(file)) ):
-                return self.web.json_response(status=403, detail="The content you're looking for cannot be found on this server")
-
-            response = self.web.StreamResponse(
-                headers={
-                    'Content-Type': await self.recognize_file_simple(file)
-                }
-            )
-            self.requests[request_id]['response'] = response
-            await self.after(request_id)
-
-            await response.prepare(request)
-
-            chunks = b''
-
-            async with aiofiles_open(file, 'rb') as f:
-                while True:
-                    try:
-                        chunk = f.read(chunk_size)
-                        if chunk:
-                            chunks += chunk
-                            chunk = chunks.decode('utf-8')
-    
-                            for key, val in args.items():
-                                chunk = chunk.replace(key, val)
-                            
-                            chunk = chunk.encode()
-                            if isinstance(chunk, (bytes, bytearray)):
-                                await response.write(chunk)
-                                chunks = b''
-                        else:
-                            await response.write_eof()
-                            break
-    
-                    except (UnicodeEncodeError, UnicodeWarning, UnicodeTranslateError, UnicodeDecodeError):
-                        pass
-                    except Exception as e:
-                        await self.log(e)
-
-        except Exception as e:
-            await self.log(e)
-        finally:
-            return response
-
     async def app_defender(self, request_id):
         request = self.requests[request_id]['request']
 
@@ -327,15 +316,17 @@ class Rate_limiter:
 
         host, useragent = request.headers.get('Host', None), request.headers.get('User-Agent', None)
         
+        now = await gel().run_in_executor(None, self.retrieve_time)
+        
         if ip not in self.ip_s:
             await self.identification(ip)
             self.ip_s[ip] = {
                 'host': host,
                 'useragent': useragent,
                 'hits': 1,
-                'stamp': datetime.now(),
+                'stamp': now,
                 'nerfed_times': 0,
-                'last_hit': datetime.now(),
+                'last_hit': now,
                 'cooldown': self.cool_down
             }
             return None
@@ -345,7 +336,7 @@ class Rate_limiter:
                 await self.abort('Whoa there! It seems you\'re trying to do something a bit dodgy. Just a friendly reminder: messing with credentials is both illegal and dramatic.')
 
             limit_status = await self.rate_limiting(ip)
-            self.ip_s[ip]['last_hit'] = datetime.now()
+            self.ip_s[ip]['last_hit'] = now
 
             if not limit_status [0]:
                 args = {
@@ -353,9 +344,9 @@ class Rate_limiter:
                     '_page_context_': limit_status[1],
                     '_app_name_': 'Anonyx Tools',
                 }
-
-                response = await self.stream_dynamic_file(request_id, './static/page/rate_limits.html', args=args)
-                return response
+                msg = limit_status[1]
+                await self.abort(msg)
+                return
             else:
                 self.ip_s[ip]['hits'] += 1
                 return None
@@ -369,15 +360,19 @@ class App(Handlers, Log, Safe, RecognizeFile, FileHandlers, Rate_limiter):
         self.after_middlewares = []
         self.logger_config = {'store_logs': False, 'encrypt': False}
         try:
-            self.safe_key = environ.get("safe_key", Fernet.generate_key())
-        except:
-            self.safe_key = None
-            
+            self.safe_key = environ.get("safe_key", None)
+            if self.safe_key:
+                self.safe_key = self.safe_key.encode()
+            if not self.safe_key:
+                self.safe_key = Fernet.generate_key()
+                environ["safe_key"] = str(self.safe_key)
+        except Exception as e:
+            p(e)
+        
         self.web = web
         self.app_name = app_name
         self.cookie_auth = False
         self.configs = {}
-
         Log.__init__(self)
         Safe.__init__(self)
         RecognizeFile.__init__(self)
@@ -407,13 +402,16 @@ class App(Handlers, Log, Safe, RecognizeFile, FileHandlers, Rate_limiter):
                 request_id = None
                 request = args[0]
 
-                if request_id is None:
+                def gen_id():
                     while True:
                         request_id = str(token_urlsafe(16))
                         if request_id not in self.requests:
-                            break
+                            return request_id
                         else:
-                            await io.sleep(0.01)               
+                            pass
+                
+                request_id = await io.get_event_loop().run_in_executor(None, gen_id)
+                
                 r_data = {
                     'request': request,
                     'request_state': 'unprocessed',
@@ -473,16 +471,19 @@ class App(Handlers, Log, Safe, RecognizeFile, FileHandlers, Rate_limiter):
                 return response
 
     async def finalize(self):
-        if self.jobs != []:
-            for job in self.jobs:
-                job.cancel()
-
-            for job in self.jobs:
-                try:
-                    await job
-                except io.CancelledError:
-                    pass
-
+        try:
+            if self.jobs != []:
+                for job in self.jobs:
+                    job.cancel()
+    
+                for job in self.jobs:
+                    try:
+                        await job
+                    except io.CancelledError:
+                        pass
+        except:
+            pass
+        
     async def run_app(self):
         runner = None
         server = self.web.Server(self.handle_request)
@@ -507,7 +508,8 @@ class App(Handlers, Log, Safe, RecognizeFile, FileHandlers, Rate_limiter):
         except KeyboardInterrupt:
             pass
         finally:
-            io.run(self.finalize())
+            if io.run(self.finalize()):
+                return
 
 if __name__ == "__main__":
     pass
