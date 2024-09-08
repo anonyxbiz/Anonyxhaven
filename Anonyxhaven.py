@@ -15,7 +15,9 @@ from aiohttp import web, ClientSession
 from aiofiles import open as aiofiles_open
 
 try:
-    from cryptography.fernet import Fernet
+    from Crypto.Cipher import AES
+    from Crypto.Protocol.KDF import PBKDF2
+    from base64 import b64encode, b64decode
 except Exception as e:
     pass
 
@@ -80,19 +82,53 @@ class Log:
         if console_log:
             p(content)
 
-class Safe:
-    def __init__(self) -> None:
-        pass
+class Secret:
+    def __init__(self, key=0, salt=0) -> None:
+        salt = str(salt) or 'problem'
+        if not self.safe_key:
+            self.safe_key = str(key) or 'kim_jong_un'
+            
+        self.key = PBKDF2(self.safe_key.encode(), salt.encode(), dkLen=32)
 
-    def safe_tool(self, og: list | tuple) -> str | None:
+    def safe_tool(self, og: list | tuple | dict) -> str | None:
         try:
-            if isinstance(og, (list,)):
-                return Fernet(self.safe_key).encrypt(str(og[0]).encode("utf-8")).decode('utf-8')
-            elif isinstance(og, (tuple,)):
-                return Fernet(self.safe_key).decrypt(str(og[0]).encode("utf-8")).decode('utf-8')
+            if isinstance(og, list):
+                cipher = AES.new(self.key, AES.MODE_EAX)
+                ciphertext, tag = cipher.encrypt_and_digest(str(og[0]).encode("utf-8"))
+                return b64encode(cipher.nonce + tag + ciphertext).decode('utf-8')
+                
+            elif isinstance(og, tuple):
+                data = b64decode(og[0])
+                nonce = data[:16]
+                tag = data[16:32]
+                ciphertext = data[32:]
+                cipher = AES.new(self.key, AES.MODE_EAX, nonce=nonce)
+                return cipher.decrypt_and_verify(ciphertext, tag).decode('utf-8')
+            
+            elif isinstance(og, dict):
+                cipher = AES.new(self.key, AES.MODE_EAX)
+                if (data := og.get("encrypt", 0)):
+                    ciphertext, tag = cipher.encrypt_and_digest(data)
+                
+                elif (data := og.get("decrypt", 0)):
+                    data = b64decode(data)
+                    nonce = data[:16]
+                    tag = data[16:32]
+                    ciphertext = data[32:]
+                    cipher = AES.new(self.key, AES.MODE_EAX, nonce=nonce)
+                    return cipher.decrypt_and_verify(ciphertext, tag)
+                else:
+                    return
+                
+                return b64encode(cipher.nonce + tag + ciphertext)
+                
         except Exception as e:
             p(e)
-        
+    
+    async def operate(self, og: list | tuple | dict) -> str | None:
+        out = await io.to_thread(self.safe_tool, og)
+        return out
+       
 class RecognizeFile:
     def __init__(self):
         pass
@@ -351,7 +387,7 @@ class Rate_limiter:
                 self.ip_s[ip]['hits'] += 1
                 return None
 
-class App(Handlers, Log, Safe, RecognizeFile, FileHandlers, Rate_limiter):
+class App(Handlers, Log, Secret, RecognizeFile, FileHandlers, Rate_limiter):
     def __init__(self, host='0.0.0.0', port=8001, app_name='Anonyxhaven') -> None:
         self.host, self.port = host, port
         self.jobs = []
@@ -361,11 +397,6 @@ class App(Handlers, Log, Safe, RecognizeFile, FileHandlers, Rate_limiter):
         self.logger_config = {'store_logs': False, 'encrypt': False}
         try:
             self.safe_key = environ.get("safe_key", None)
-            if self.safe_key:
-                self.safe_key = self.safe_key.encode()
-            if not self.safe_key:
-                self.safe_key = Fernet.generate_key()
-                environ["safe_key"] = str(self.safe_key)
         except Exception as e:
             p(e)
         
@@ -374,7 +405,7 @@ class App(Handlers, Log, Safe, RecognizeFile, FileHandlers, Rate_limiter):
         self.cookie_auth = False
         self.configs = {}
         Log.__init__(self)
-        Safe.__init__(self)
+        Secret.__init__(self)
         RecognizeFile.__init__(self)
         Handlers.__init__(self)
         FileHandlers.__init__(self)
