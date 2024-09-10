@@ -128,7 +128,106 @@ class Secret:
     async def operate(self, og: list | tuple | dict) -> str | None:
         out = await io.to_thread(self.safe_tool, og)
         return out
-       
+
+class Base_Helpers:
+    def __init__(self):
+        pass
+    async def request_data(self, request_id, request_data=0):
+        request = self.requests[request_id]['request']
+        if request.method == "POST":
+            request_data = await request.json()
+        else:
+            request_data = dict(request.query)
+        
+        headers = {key: val for key, val in request.headers.items()}
+        
+        if request_data:
+            request_data["headers"] = headers
+        else:
+            request_data = {"headers": headers}
+            
+        return request_data
+    async def serve(self, request_id, file: str, chunk_size:int=126, args: dict={}):
+        try:
+            file = await io.to_thread(abspath, file)
+            file_exists = await io.to_thread(exists, file)
+            
+            if not file_exists:
+                raise Error("The content you're looking for cannot be found on this server")
+            else:
+                filename = await io.to_thread(basename, file)
+                
+            file_size = await io.to_thread(getsize, file)
+            
+            range_header = self.requests[request_id]['request'].headers.get('Range', None)
+            if range_header:
+                byte_range = range_header.strip().split('=')[1]
+                start, end = byte_range.split('-')
+                start = int(start)
+                end = int(end) if end else file_size - 1
+            else:
+                start = 0
+                end = file_size - 1
+
+            content_type = await self.recognize_file_simple(file)
+
+            res = self.web.StreamResponse(
+                status=206 if range_header else 200,
+                headers={
+                    'Content-Range': f'bytes {start}-{end}/{file_size}' if range_header else '',
+                    'Accept-Ranges': 'bytes',
+                    'Content-Length': str(end - start + 1),
+                    'Content-Type': content_type,
+                    'Content-Disposition': 'inline; filename="{}"'.format(filename)
+                }
+            )
+            
+            self.requests[request_id]['response'] = res
+            await self.after(request_id)
+
+            async with aiopen(file, 'rb') as f:
+                await self.requests[request_id]['response'].prepare(self.requests[request_id]['request'])
+
+                while True:
+                    try:
+                        await f.seek(start)
+                        while start < end + 1:
+                            chunk = await f.read(chunk_size)
+                            
+                            if chunk:
+                                start += len(chunk)
+                                await self.requests[request_id]['response'].write(chunk)
+                                if start > end:
+                                    break
+                            else:
+                                break
+                        break
+                    except Exception as e:
+                        await self.log(e)
+                        break
+                    
+        except Error as e:
+            self.requests[request_id]['response'] = self.web.json_response(status=403, data={'detail': str(e)})
+        except Exception as e:
+            await self.log(e)
+            self.requests[request_id]['response'] = self.web.json_response(status=404, data={'detail': "Unexpected"})
+        finally:
+            try:
+                return self.requests[request_id]['response']
+            except Exception as e:
+                await self.log(e)
+    async def static_content(self, request_id, file_path=0):
+        r_data = await self.request_data(request_id)
+        
+        if not file_path:
+            if not (html := r_data.get('p', None)) and not (static := r_data.get('static', None)):
+                html = 'index'
+    
+            if html: file_path = f"./static/page/{html}.html"
+            elif static: file_path = f"./static/{static}"
+            
+        return await self.serve(request_id, file_path, chunk_size=256)
+             
 class RecognizeFile:
     def __init__(self):
         pass
@@ -387,7 +486,7 @@ class Rate_limiter:
                 self.ip_s[ip]['hits'] += 1
                 return None
 
-class App(Handlers, Log, Secret, RecognizeFile, FileHandlers, Rate_limiter):
+class App(Handlers, Log, Secret, RecognizeFile, FileHandlers, Rate_limiter, Base_Helpers):
     def __init__(self, host='0.0.0.0', port=8001, app_name='Anonyxhaven') -> None:
         self.host, self.port = host, port
         self.jobs = []
@@ -410,6 +509,7 @@ class App(Handlers, Log, Secret, RecognizeFile, FileHandlers, Rate_limiter):
         Handlers.__init__(self)
         FileHandlers.__init__(self)
         Rate_limiter.__init__(self)
+        Base_Helpers.__init__(self)
 
     def add_before(self, middleware_func: Callable):
         self.before_middlewares.append(middleware_func)
