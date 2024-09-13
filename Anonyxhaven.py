@@ -185,7 +185,7 @@ class Base_Helpers:
             self.requests[request_id]['response'] = res
             await self.after(request_id)
 
-            async with aiopen(file, 'rb') as f:
+            async with aiofiles_open(file, 'rb') as f:
                 await self.requests[request_id]['response'].prepare(self.requests[request_id]['request'])
 
                 while True:
